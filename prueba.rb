@@ -36,3 +36,6 @@ class Guerrero < Atacante
 
 
 end
+
+mili = Guerrero.new(4,2)
+mili.modificar_vida(1)

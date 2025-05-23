@@ -41,24 +41,27 @@ module Contracts
     metodos_anteriores = instance_methods()# tomo los metodos de instancia, y a ellos les pongo la evaluacion de invariant al final
     metodos_anteriores.each do |metodo|
       original_method = instance_method(metodo)
+      @invariant_defining = true
       define_method metodo do |*args, &block|
         @invariant_executing ||= false #para que el originla method no vuelva recursivamente a llamar
-        unless @invariant_executing == true
-          puts "ENTRO EN IF "
+        unless @invariant_executing || @invariant_exec
           @invariant_executing = true
-          # Ejecuta el método original
           result = original_method.bind(self).call(*args, &block)
           @invariant_executing = false
-          invariant_proc.call
+          @invariant_exec = true
+          instance_exec(&invariant_proc) if invariant_proc
+          @invariant_exec = false
           return result
         end
       end
+      @invariant_defining = false
     end
     before_and_after_each_call(nil, invariant_proc)
   end
 
   def method_added(method_name) # self es la clase
-    return if @method_adding || !@procs || @procs.empty?
+    return if @method_adding || !@procs || @procs.empty? || @invariant_defining
+
     @method_adding = true
     original_method = instance_method(method_name)
     proc_dupes = @procs.dup
@@ -73,7 +76,7 @@ module Contracts
         super()
       end
       proc_dupes.each do |before, _|
-
+        puts "EJECUTA INSTANCE EXEC EN METHOD ADDED MODIFIED "
         argument_context.instance_exec(&before) if before
       end
 
