@@ -1,107 +1,135 @@
 # frozen_string_literal: true
 
 module Contracts
+  def self.extended(base)
+    @normal = false
+    anteriores = base.instance_methods(true)
+    anteriores.delete(:self)
+    anteriores.each do |method|
+      method_unbound= base.instance_method(method)
+      # base.define_method(method) do |*args, &block|
+      #   puts "METODO #{method}"
+      #   result = method_unbound.bind(self).call(*args, &block)
+      #   "puts TERMINE DE EJECUTAR EN CORE-----------------------"
+      #   result
+      # end
+      base.method_added(method)
+    end
+    @normal = true
+  end
   def before_and_after_each_call(before_proc, after_proc)
     @procs ||= []
     @procs << [before_proc, after_proc]
-    @counter ||= 0
   end
 
   def procs
-    @procs ||= []
+    @procs ||=[]
   end
 
   def pre_procs
-    @pre_procs ||= []
+    @pre_procs
   end
 
   def post_procs
-    @post_procs ||= []
+    @post_procs
   end
 
   def pre(&block)
     pre_proc = proc do
       raise 'RuntimeError: Failed to meet preconditions' unless instance_exec(&block)
     end
-    pre_procs << pre_proc
-    before_and_after_each_call(pre_proc, nil)
+    @pre_procs = pre_proc
   end
 
   def post(&block)
     post_proc = proc do |result|
       raise 'RuntimeError: Failed to meet postconditions' unless instance_exec(result, &block)
     end
-    post_procs << post_proc
-    before_and_after_each_call(nil, post_proc)
+    @post_procs = post_proc
   end
   def invariant(&block)
+
     invariant_proc = proc do |result|
       raise "RuntimeError: Failed to meet invariant #{block}"unless instance_exec(result, &block)
     end
-    metodos_anteriores = instance_methods()# tomo los metodos de instancia, y a ellos les pongo la evaluacion de invariant al final
-    metodos_anteriores.each do |metodo|
-      original_method = instance_method(metodo)
-      @invariant_defining = true
-      define_method metodo do |*args, &block|
-        @invariant_executing ||= false #para que el originla method no vuelva recursivamente a llamar
-        unless @invariant_executing || @invariant_exec
-          @invariant_executing = true
-          result = original_method.bind(self).call(*args, &block)
-          @invariant_executing = false
-          @invariant_exec = true
-          instance_exec(&invariant_proc) if invariant_proc
-          @invariant_exec = false
-          return result
-        end
-      end
-      @invariant_defining = false
-    end
     before_and_after_each_call(nil, invariant_proc)
+    puts "llama a invariant #{@procs.inspect}"
   end
 
   def method_added(method_name) # self es la clase
-    return if @method_adding || !@procs || @procs.empty? || @invariant_defining
-
+    return if @method_adding
     @method_adding = true
     original_method = instance_method(method_name)
-    proc_dupes = @procs.dup
-    define_method method_name do |*args, &block| #dentro del define es la isntancia del guerrero self
-      instance = self
-      argument_context = Object.new
-      original_method.parameters.each_with_index do |(_, parameter_name), index|
-        argument_context.define_singleton_method(parameter_name) { args[index] } if parameter_name
-      end
-      argument_context.define_singleton_method(:method_missing) do |method, *m_args, &m_block|
-        instance.send(method, *m_args, &m_block)
-        super()
-      end
-      proc_dupes.each do |before, _|
-        puts "EJECUTA INSTANCE EXEC EN METHOD ADDED MODIFIED "
-        argument_context.instance_exec(&before) if before
-      end
+    if @normal
+      return if !@procs || @procs.empty?
+      pre = @pre_procs
+      pos = @post_procs
+      define_method method_name do |*args, &block| #dentro del define es la isntancia del guerrero self
+        puts "tengo define method de method added #{method_name}"
+        instance = self
+        argument_context = Object.new
+        original_method.parameters.each_with_index do |(_, parameter_name), index|
+          argument_context.define_singleton_method(parameter_name) { args[index] } if parameter_name
+        end
+        argument_context.define_singleton_method(:method_missing) do |method, *m_args, &m_block|
+          if instance.methods.include?(method)
+            instance.send(method, *m_args, &m_block)
+          else
+            super(method, *m_args, &m_block)
+          end
 
-      result = original_method.bind(self).call(*args, &block)
-
-      proc_dupes.each do |_, after|
-
-        argument_context.instance_exec(result, &after) if after
+        end
+        argument_context.instance_exec(&pre) if pre
+        puts 'evaluo hacer before '
+        #if self.class.procs != nil
+          self.class.procs.each do |before, _|
+            puts "HAGO BEFORE #{before}"
+            argument_context.instance_exec(&before) if before
+          end
+          #end
+        puts "voy a hacer el original"
+        result = original_method.bind(self).call(*args, &block)
+        #if self.class.procs != nil
+          self.class.procs.each do |_, after|
+            puts "after proc #{after.inspect}"
+            argument_context.instance_exec(result, &after) if after
+          end
+        #end
+        argument_context.instance_exec(result, &pos) if pos
+        result
       end
-      result
+    else
+      define_method method_name do |*args, &block| #dentro del define es la isntancia del guerrero self
+        puts "voy a ejecutar #{method_name} en #{self}"
+        unless @llamado
+          @llamado = true
+          if self.class.procs != nil
+            self.class.procs.each do |before, _|
+              puts "HAGO BEFORE #{before}"
+              instance_exec(&before) if before
+            end
+          end
+          puts "voy a hacer el original"
+          result = original_method.bind(self).call(*args, &block)
+          if self.class.procs != nil
+            self.class.procs.each do |_, after|
+              puts "after proc #{after.inspect}"
+              instance_exec(result, &after) if after
+            end
+          else
+            result = original_method.bind(self).call(*args, &block)
+            @llamado = false
+        end
+        end
+        result
+      end
     end
-    cleanup_procs
+
+    #cleanup_procs
+    @pre_procs = nil
+    @post_procs = nil
     @method_adding = false
-
-
-
   end
 
-  private
-
-  def cleanup_procs
-    @procs = @procs.reject do |before_proc, after_proc|
-      (before_proc && pre_procs.include?(before_proc)) ||
-        (after_proc && post_procs.include?(after_proc))
-    end
-  end
 
 end
