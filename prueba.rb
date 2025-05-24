@@ -38,5 +38,4 @@ class Guerrero < Atacante
 
 end
 
-mili = Guerrero.new(6,10)
-
+mili = Guerrero.new(1,2)

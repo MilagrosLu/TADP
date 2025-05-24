@@ -2,20 +2,58 @@
 
 module Contracts
   def self.extended(base)
-    @normal = false
-    anteriores = base.instance_methods(true)
-    anteriores.delete(:self)
-    anteriores.each do |method|
-      method_unbound= base.instance_method(method)
-      # base.define_method(method) do |*args, &block|
-      #   puts "METODO #{method}"
-      #   result = method_unbound.bind(self).call(*args, &block)
-      #   "puts TERMINE DE EJECUTAR EN CORE-----------------------"
-      #   result
-      # end
-      base.method_added(method)
+    anteriores = base.instance_methods(false)
+    ancestros = base.ancestors
+    punto_corte = ancestros.index(Object)
+    puts punto_corte
+    final = ancestros.slice(0, punto_corte )
+    puts final
+    final.each do |anc|
+      # puts anc
+      @ant_final = anteriores + anc.instance_methods(false)
     end
-    @normal = true
+    puts @ant_final.inspect
+
+    (@ant_final).each do |method|
+      original_method = base.instance_method(method)
+      base.define_method(method) do |*args, &block|
+        unless @llamado
+          @llamado = true
+          instance = self
+          argument_context = Object.new
+          original_method.parameters.each_with_index do |(_, parameter_name), index|
+            argument_context.define_singleton_method(parameter_name) { args[index] } if parameter_name
+          end
+          argument_context.define_singleton_method(:method_missing) do |method, *m_args, &m_block|
+            if instance.methods.include?(method)
+              instance.send(method, *m_args, &m_block)
+            else
+              super(method, *m_args, &m_block)
+            end
+
+          end
+          puts 'evaluo hacer before '
+          base.exclude_procs_with_method(method).each do |before, _|
+            puts "HAGO BEFORE #{before} CON METODO #{method}"
+            argument_context.instance_exec(&before) if before
+          end
+
+          result = original_method.bind(self).call(*args, &block)
+
+          base.exclude_procs_with_method(method).each do |_, after|
+            puts "after proc #{after.inspect}"
+            argument_context.instance_exec(result, &after) if after
+          end
+          @llamado = false
+          result
+
+        else
+          result = original_method.bind(self).call(*args, &block)
+
+          result
+        end
+      end
+    end
   end
   def before_and_after_each_call(before_proc, after_proc)
     @procs ||= []
@@ -57,11 +95,10 @@ module Contracts
   end
 
   def method_added(method_name) # self es la clase
-    return if @method_adding
+    return if @method_adding || !@procs || @procs.empty?
     @method_adding = true
     original_method = instance_method(method_name)
-    if @normal
-      return if !@procs || @procs.empty?
+    contract_class = self
       pre = @pre_procs
       pos = @post_procs
       define_method method_name do |*args, &block| #dentro del define es la isntancia del guerrero self
@@ -81,55 +118,31 @@ module Contracts
         end
         argument_context.instance_exec(&pre) if pre
         puts 'evaluo hacer before '
-        #if self.class.procs != nil
-          self.class.procs.each do |before, _|
+        contract_class.exclude_procs_with_method(method_name).each do |before, _|
             puts "HAGO BEFORE #{before}"
             argument_context.instance_exec(&before) if before
           end
-          #end
-        puts "voy a hacer el original"
+
         result = original_method.bind(self).call(*args, &block)
-        #if self.class.procs != nil
-          self.class.procs.each do |_, after|
+
+        contract_class.exclude_procs_with_method(method_name).each do |_, after|
             puts "after proc #{after.inspect}"
             argument_context.instance_exec(result, &after) if after
           end
-        #end
         argument_context.instance_exec(result, &pos) if pos
         result
       end
-    else
-      define_method method_name do |*args, &block| #dentro del define es la isntancia del guerrero self
-        puts "voy a ejecutar #{method_name} en #{self}"
-        unless @llamado
-          @llamado = true
-          if self.class.procs != nil
-            self.class.procs.each do |before, _|
-              puts "HAGO BEFORE #{before}"
-              instance_exec(&before) if before
-            end
-          end
-          puts "voy a hacer el original"
-          result = original_method.bind(self).call(*args, &block)
-          if self.class.procs != nil
-            self.class.procs.each do |_, after|
-              puts "after proc #{after.inspect}"
-              instance_exec(result, &after) if after
-            end
-          else
-            result = original_method.bind(self).call(*args, &block)
-            @llamado = false
-        end
-        end
-        result
-      end
-    end
-
     #cleanup_procs
     @pre_procs = nil
     @post_procs = nil
     @method_adding = false
   end
-
+  def exclude_procs_with_method(method_name)
+    procs.dup.reject do |proc_pair|
+      [proc_pair[0], proc_pair[1]].compact.any? do |proc|
+        proc.inspect.include?(method_name.to_s)
+      end
+    end
+  end
 
 end
